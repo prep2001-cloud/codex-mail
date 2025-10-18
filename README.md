@@ -15,11 +15,6 @@ This project implements an agentic architecture for downloading invoices from Gm
         │        │
         │        ├─────────────┐
         │                      ▼
-        │              ┌──────────────┐
-        │              │Interactive   │
-        │              │Browser Tool  │
-        │              └──────────────┘
-        │
         ├──────────────▶ Attachment Processor
         │
         ├──────────────▶ Direct URL Downloader
@@ -29,7 +24,15 @@ This project implements an agentic architecture for downloading invoices from Gm
         └──────────────▶ Archive Agent
 ```
 
-The orchestrator consumes new Gmail messages, runs deterministic attachment processing first, and then enters an iterative planning loop. During each iteration, the planner receives the current observation and returns a structured JSON action (e.g., `{ "action": "goto", "url": "https://..." }`). The orchestrator executes that action through one of the available tools, feeds the resulting observation back into the planner, and repeats until an invoice document is retrieved or the planner stops.
+The orchestrator consumes new Gmail messages, runs deterministic attachment processing first, and then enters an iterative planning loop. During each iteration, the planner receives the current observation and returns a structured JSON action (e.g., `{ "action": "download_url", "url": "https://.../invoice.pdf" }`). The orchestrator executes that action through one of the available API-driven tools, feeds the resulting observation back into the planner, and repeats until an invoice document is retrieved or the planner stops.
+
+Available planner actions are intentionally limited to API-friendly operations:
+
+- `download_url` – fetch an invoice file directly from an HTTP(S) endpoint.
+- `finish` – indicate that all useful work is complete.
+- `ignore` – mark the message as out-of-scope when no invoices are present.
+
+UI automation (clicking, typing, etc.) is deliberately excluded to satisfy the "API-only" requirement.
 
 ## Key Components
 
@@ -37,7 +40,6 @@ The orchestrator consumes new Gmail messages, runs deterministic attachment proc
 - **`mail_agent/agents/planner.py`** – An iterative large language model planner that reasons step-by-step and emits JSON actions compatible with the tools.
 - **`mail_agent/tools/attachment_processor.py`** – Saves any invoice attachments bundled within the email.
 - **`mail_agent/tools/web_downloader.py`** – Downloads invoices pointed to by direct URLs in the email body.
-- **`mail_agent/tools/interactive_browser.py`** – Provides a Playwright-driven browser for complex multi-step website flows.
 - **`mail_agent/agents/extractor.py`** – Converts invoice documents into structured metadata.
 - **`mail_agent/agents/archive.py`** – Archives the invoice and metadata to Google Drive or a local folder.
 - **`mail_agent/agents/orchestrator.py`** – Coordinates the overall workflow, handles logging, and stores processing outcomes.

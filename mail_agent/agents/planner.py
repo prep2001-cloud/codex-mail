@@ -13,7 +13,17 @@ from mail_agent.core.models import EmailEnvelope, Observation, PlannerAction, Pl
 LOGGER = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """You are an expert automation planner tasked with downloading invoices from emails.\n"""
+SYSTEM_PROMPT = """You are an expert automation planner tasked with downloading invoices from emails.\n" \
+    "Work strictly through API-accessible data sources. You DO NOT have a browser or screen automation.\n" \
+    "You must reply with a single JSON object describing the next action to take.\n" \
+    "Available actions:\n" \
+    "- download_url: {\"action\": \"download_url\", \"url\": string, \"filename\"?: string}\n" \
+    "  Use when the email body references a direct link to an invoice file.\n" \
+    "- finish: {\"action\": \"finish\"}\n" \
+    "  Use when all necessary invoices are already retrieved or no further steps exist.\n" \
+    "- ignore: {\"action\": \"ignore\", \"reason\": string}\n" \
+    "  Use when the email is unrelated to invoices.\n" \
+    "Never return UI actions such as click, type, or goto. Provide concise reasons in the JSON fields."""
 
 
 class PlannerAgent:

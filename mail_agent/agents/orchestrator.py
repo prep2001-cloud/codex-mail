@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Optional
 
 from mail_agent.config import SystemSettings
 from mail_agent.core.models import (
@@ -17,7 +17,6 @@ from mail_agent.core.models import (
 )
 from mail_agent.services.gmail_client import GmailClient
 from mail_agent.tools.attachment_processor import AttachmentProcessor
-from mail_agent.tools.interactive_browser import InteractiveBrowser
 from mail_agent.tools.web_downloader import WebDownloader
 
 LOGGER = logging.getLogger(__name__)
@@ -69,11 +68,24 @@ class Orchestrator:
         if not documents:
             documents.extend(await self._run_planning_loop(email, context, observation))
 
+        status = context.get("status")
+        reason = context.get("reason")
+
         if not documents:
+            if status == "failed":
+                disposition = MessageDisposition.FAILED
+                notes = reason or "Planner actions failed"
+            elif status == "ignored":
+                disposition = MessageDisposition.IGNORED
+                notes = reason or "Planner marked email as ignored"
+            else:
+                disposition = MessageDisposition.IGNORED
+                notes = reason or "No invoice found"
+
             entry = ProcessingLogEntry(
                 message_id=email.id,
-                disposition=MessageDisposition.IGNORED,
-                notes="No invoice found",
+                disposition=disposition,
+                notes=notes,
             )
             self._logs.append(entry)
             return entry
@@ -98,41 +110,68 @@ class Orchestrator:
     ) -> list[InvoiceDocument]:
         documents: list[InvoiceDocument] = []
         max_steps = self._settings.planner.max_steps
-        async with InteractiveBrowser() as browser:
-            for step in range(max_steps):
-                LOGGER.info("Planner step %s", step + 1)
-                action = await self._deps.planner_agent.plan_next_action(email, context, observation)
-                if action is None:
-                    LOGGER.info("Planner did not return an action; ending loop")
-                    break
+        for step in range(max_steps):
+            LOGGER.info("Planner step %s", step + 1)
+            action = await self._deps.planner_agent.plan_next_action(email, context, observation)
+            if action is None:
+                LOGGER.info("Planner did not return an action; ending loop")
+                break
 
-                result = await self._execute_action(action, browser)
-                observation = result.observation
-                context.update_with(observation.payload.items())
+            result = await self._execute_action(action)
+            observation = result.observation
+            context.update_with(observation.payload.items())
 
-                docs = observation.payload.get("documents") if observation.payload else None
-                if docs:
-                    documents.extend(docs)
-                    break
+            docs = observation.payload.get("documents")
+            if docs:
+                documents.extend(docs)
+                break
 
-                if not result.success:
-                    LOGGER.warning("Planner action failed: %s", result.error)
-                    continue
+            status = observation.payload.get("status")
+            if status == "ignored":
+                LOGGER.info("Planner marked email as ignored: %s", observation.payload.get("reason"))
+                break
+            if status == "finished":
+                LOGGER.info("Planner finished without additional actions")
+                break
+
+            if not result.success:
+                LOGGER.warning("Planner action failed: %s", result.error)
+                continue
         return documents
 
-    async def _execute_action(self, action: PlannerAction, browser: InteractiveBrowser) -> ToolResult:
+    async def _execute_action(self, action: PlannerAction) -> ToolResult:
         if action.action == "download_url":
             url = action.params["url"]
             filename = action.params.get("filename")
-            return await self._deps.web_downloader.download(url, filename=filename)
-        elif action.action in {"goto", "click", "type", "wait_for", "submit", "screenshot"}:
-            return await browser.execute(action)
-        else:
+            try:
+                return await self._deps.web_downloader.download(url, filename=filename)
+            except Exception as exc:  # pragma: no cover - network errors are environment dependent
+                reason = f"Failed to download {url}: {exc}"
+                observation = Observation(
+                    description=reason,
+                    payload={"status": "failed", "reason": reason, "url": url},
+                )
+                return ToolResult(success=False, observation=observation, error=str(exc))
+        if action.action == "finish":
             observation = Observation(
-                description=f"Unknown action {action.action}",
-                payload={},
+                description="Planner finished processing",
+                payload={"status": "finished"},
             )
-            return ToolResult(success=False, observation=observation, error="unknown_action")
+            return ToolResult(success=True, observation=observation)
+        if action.action == "ignore":
+            reason = action.params.get("reason", "no invoice detected")
+            observation = Observation(
+                description="Planner requested to ignore message",
+                payload={"status": "ignored", "reason": reason},
+            )
+            return ToolResult(success=True, observation=observation)
+
+        reason = f"Unknown action {action.action}"
+        observation = Observation(
+            description=reason,
+            payload={"status": "failed", "reason": reason, "action": action.action},
+        )
+        return ToolResult(success=False, observation=observation, error="unknown_action")
 
     @property
     def logs(self) -> Iterable[ProcessingLogEntry]:

@@ -86,6 +86,29 @@ class GmailClient:
         body_text = ""
         body_html = None
 
+        def _fetch_attachment(attachment_id: str) -> bytes:
+            try:
+                attachment = (
+                    self._service.users()
+                    .messages()
+                    .attachments()
+                    .get(userId="me", messageId=message_id, id=attachment_id)
+                    .execute()
+                )
+            except HttpError as error:
+                LOGGER.error(
+                    "Unable to fetch attachment %s for message %s: %s",
+                    attachment_id,
+                    message_id,
+                    error,
+                )
+                return b""
+
+            data = attachment.get("data")
+            if not data:
+                return b""
+            return base64.urlsafe_b64decode(data)
+
         def _extract_part(part: dict) -> None:
             nonlocal body_text, body_html
             mime_type = part.get("mimeType", "")
@@ -102,12 +125,16 @@ class GmailClient:
             elif mime_type == "text/html" and decoded:
                 body_html = decoded.decode("utf-8", errors="replace")
             elif filename:
+                attachment_data = decoded
+                attachment_id = body.get("attachmentId")
+                if not attachment_data and attachment_id:
+                    attachment_data = _fetch_attachment(attachment_id)
                 attachments.append(
                     EmailAttachment(
                         filename=filename,
                         mime_type=mime_type,
-                        data=decoded or None,
-                        download_url=body.get("attachmentId"),
+                        data=attachment_data or None,
+                        download_url=attachment_id,
                     )
                 )
 
